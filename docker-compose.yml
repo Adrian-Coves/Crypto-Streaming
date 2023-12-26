@@ -1,0 +1,103 @@
+version: '3'
+services:
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    volumes:
+      - ./grafana-provisioning:/etc/grafana/provisioning
+      - ./grafana-dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3000:3000"
+    user: "0"
+    networks:
+      - broker-kafka
+    env_file:
+      - influxv2.env
+    depends_on:
+      - influxdb
+      - init-kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_SERVER_ID: 1
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - broker-kafka
+  broker:
+    image: confluentinc/cp-kafka:latest
+    container_name: broker
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    networks:
+      - broker-kafka
+  init-kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - broker
+    container_name: init-kafka
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      kafka-topics --bootstrap-server broker:19092 --list
+      echo -e 'Creating kafka topics'
+      kafka-topics --bootstrap-server broker:19092 --create --if-not-exists --topic ticker_batch --replication-factor 1 --partitions 1
+      echo -e 'Successfully created the following topics:'
+      kafka-topics --bootstrap-server broker:19092 --list
+      "
+    networks:
+      - broker-kafka
+  coinbase-producer:
+    image: coinbase-producer:latest
+    hostname: coinbase-producer
+    container_name: coinbase-producer
+    depends_on:
+      - init-kafka
+      - broker
+    networks:
+      - broker-kafka
+  influxdb:
+    image: influxdb:2.7.4
+    container_name: influxdb
+    restart: unless-stopped
+    env_file:
+      - influxv2.env
+    ports:
+      - "8086:8086"
+    volumes:
+      - ./influxdb2/config:/etc/influxdb2
+      - ./influxdb2/db:/var/lib/
+    networks:
+      - broker-kafka
+  telegraf:
+    image: telegraf:1.29.1
+    container_name: telegraf
+    restart: always
+    depends_on:
+      - influxdb
+      - init-kafka
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    env_file:
+      - influxv2.env
+    networks:
+      - broker-kafka
+volumes:
+  influxdb2:
+networks:
+  broker-kafka:
+    driver: bridge
